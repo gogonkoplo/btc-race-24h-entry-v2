@@ -102,6 +102,24 @@ function regimeIsUp(closeNow: number): boolean {
   return trendLine.value > regimeLine.value && closeNow > regimeLine.value;
 }
 
+/**
+ * Exit decision for an open position, kept separate from the batch loop so
+ * the four exit rules read as one checklist. Money ratios are compared in
+ * exact bigint quote units (value * 10000 against cost * ratio); the
+ * trailing rule works on closes: it arms once the peak close reaches
+ * TRAIL_ARM_GAIN over the anchor close and fires on a close TRAIL_DROP
+ * below that peak. The regime rule fires when the fast line crosses back
+ * under the slow line. Any single rule is enough to sell everything.
+ */
+function shouldExit(worthNow: bigint, costBasis: bigint, closeNow: number): boolean {
+  if (worthNow * 10000n <= costBasis * STOP_RATIO_NUM) return true;
+  if (worthNow * 10000n >= costBasis * TARGET_RATIO_NUM) return true;
+  const trailArmed = anchorClose > 0 && peakClose >= anchorClose * TRAIL_ARM_GAIN;
+  if (trailArmed && closeNow <= peakClose * (1 - TRAIL_DROP)) return true;
+  if (trendLine.value !== null && regimeLine.value !== null && trendLine.value < regimeLine.value) return true;
+  return false;
+}
+
 await runBars({
   onBatch(state, batch) {
     // Fold every bar of this batch into the indicators first; the decision
@@ -132,14 +150,8 @@ await runBars({
 
       const worthNow = state.value(symbol, position.qty);
       const costBasis = position.cost;
-      const hitStop = worthNow * 10000n <= costBasis * STOP_RATIO_NUM;
-      const hitTarget = worthNow * 10000n >= costBasis * TARGET_RATIO_NUM;
-      const trailArmed = anchorClose > 0 && peakClose >= anchorClose * TRAIL_ARM_GAIN;
-      const hitTrail = trailArmed && closeNow <= peakClose * (1 - TRAIL_DROP);
-      const regimeBroke =
-        trendLine.value !== null && regimeLine.value !== null && trendLine.value < regimeLine.value;
 
-      if (hitStop || hitTarget || hitTrail || regimeBroke) {
+      if (shouldExit(worthNow, costBasis, closeNow)) {
         const sellAll: SellInput = {
           side: 'sell',
           symbol,
